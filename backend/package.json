@@ -25,6 +25,7 @@
     "it-pushable": "^3.2.3",
     "libp2p": "^1.9.4",
     "uint8arrays": "^5.1.0",
+    "uuid": "^11.1.0",
     "ws": "^8.18.3"
   },
   "engines": {
