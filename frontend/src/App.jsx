@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Users, MessageCircle, Plus, Send, Settings, Wifi, WifiOff, ArrowLeft, Hash, Crown, Clock, Search, Filter, Moon, Sun, Volume2, VolumeX, MoreHorizontal, UserPlus, LogOut, RefreshCw, X, Check, Star, Zap, Shield, Globe } from 'lucide-react';
+import { Users, MessageCircle, Plus, Send, Settings, Wifi, WifiOff, ArrowLeft, Hash, Crown, Clock, Search, Filter, Moon, Sun, Volume2, VolumeX, MoreHorizontal, UserPlus, LogOut, RefreshCw, X, Check, Star, Zap, Shield, Globe, FileText, Paperclip, Download, Image, Video, File, Upload } from 'lucide-react';
+import './App.css';
+
 
 export default function App() {
   const [ws, setWs] = useState(null);
@@ -27,6 +29,10 @@ export default function App() {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
 
+  const [selectedFile, setSelectedFile] = useState(null);
+const [isUploading, setIsUploading] = useState(false);
+const fileInputRef = useRef(null);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, groupMessages, logs]);
@@ -38,6 +44,49 @@ export default function App() {
       }
     };
   }, []);
+
+  const handleFileSelect = (event) => {
+  const file = event.target.files[0];
+  if (file) {
+    // Validate file size (e.g., 10MB limit)
+    if (file.size > 10 * 1024 * 1024) {
+      setConnectionError('File size must be less than 10MB');
+      return;
+    }
+    setSelectedFile(file);
+  }
+};
+
+const sendFile = async () => {
+  if (!selectedFile || !ws || !connected || isUploading) return;
+  
+  setIsUploading(true);
+  try {
+    // Convert file to base64
+    const reader = new FileReader();
+    reader.onload = () => {
+      const fileData = {
+        type: activeChat ? 'sendFile' : 'sendGroupFile',
+        fileName: selectedFile.name,
+        fileSize: selectedFile.size,
+        fileType: selectedFile.type,
+        fileData: reader.result.split(',')[1], // Remove data:mime;base64, prefix
+        targetPeerId: activeChat?.id,
+        groupId: activeGroup?.id,
+        senderName: name
+      };
+      
+      ws.send(JSON.stringify(fileData));
+      setSelectedFile(null);
+      setIsUploading(false);
+    };
+    reader.readAsDataURL(selectedFile);
+  } catch (error) {
+    console.error('Error sending file:', error);
+    setConnectionError('Failed to send file');
+    setIsUploading(false);
+  }
+};
 
   const handleNameSubmit = (e) => {
     e.preventDefault();
@@ -117,7 +166,44 @@ const initializeConnection = () => {
           }]
         }));
         
-      } else if (data.type === 'groupMessage') {
+      } 
+
+       else if (data.type === 'fileMessage') {
+      const chatKey = data.fromId === 'self' ? data.toId : data.fromId;
+      setChatMessages(prev => ({
+        ...prev,
+        [chatKey]: [...(prev[chatKey] || []), {
+          from: data.from,
+          content: data.content,
+          timestamp: data.timestamp,
+          isOwnMessage: data.fromId === 'self',
+          isFile: true,
+          fileName: data.fileName,
+          fileSize: data.fileSize,
+          fileType: data.fileType,
+          fileData: data.fileData
+        }]
+      }));
+    } else if (data.type === 'groupFileMessage') {
+      setGroupMessages(prev => ({
+        ...prev,
+        [data.groupId]: [...(prev[data.groupId] || []), {
+          from: data.from,
+          content: data.content,
+          timestamp: data.timestamp,
+          isOwnMessage: data.fromId === 'self',
+          groupId: data.groupId,
+          isFile: true,
+          fileName: data.fileName,
+          fileSize: data.fileSize,
+          fileType: data.fileType,
+          fileData: data.fileData
+        }]
+      }));
+    }
+      
+      
+      else if (data.type === 'groupMessage') {
         setGroupMessages(prev => ({
           ...prev,
           [data.groupId]: [...(prev[data.groupId] || []), {
@@ -160,6 +246,64 @@ const initializeConnection = () => {
       console.error('Error handling WebSocket message:', err);
     }
   };
+
+  const FileMessage = ({ message }) => {
+  const downloadFile = () => {
+    const blob = new Blob([Uint8Array.from(atob(message.fileData), c => c.charCodeAt(0))], {
+      type: message.fileType
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = message.fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const isImage = message.fileType.startsWith('image/');
+
+  return (
+    <div className="space-y-2">
+      {isImage ? (
+        <div className="relative">
+          <img 
+            src={`data:${message.fileType};base64,${message.fileData}`}
+            alt={message.fileName}
+            className="max-w-xs rounded-lg shadow-md"
+          />
+          <button
+            onClick={downloadFile}
+            className="absolute top-2 right-2 p-1 bg-black/50 rounded-full hover:bg-black/70 transition-colors"
+          >
+            <Download className="w-4 h-4 text-white" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center space-x-3 p-3 bg-gray-100 rounded-lg">
+          <FileText className="w-6 h-6 text-blue-600" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate">{message.fileName}</p>
+            <p className="text-xs text-gray-500">{formatFileSize(message.fileSize)}</p>
+          </div>
+          <button
+            onClick={downloadFile}
+            className="p-1 hover:bg-gray-200 rounded transition-colors"
+          >
+            <Download className="w-4 h-4 text-gray-600" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
 
   const openChat = (peer) => {
     setActiveChat(peer);
@@ -504,6 +648,9 @@ const initializeConnection = () => {
             </div>
           </div>
 
+
+          
+
           {/* Navigation */}
           <div className="flex-1 overflow-y-auto">
             <div className="p-4 space-y-2">
@@ -705,54 +852,121 @@ const initializeConnection = () => {
                 </div>
               </div>
 
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              
+
+              {/* Chat Messages */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {(chatMessages[activeChat.id] || []).map((message, index) => (
-                  <div key={index} className={`flex ${message.isOwnMessage ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md transition-all duration-300 transform hover:scale-105 ${
-                      message.isOwnMessage 
-                        ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white' 
-                        : darkMode 
-                          ? 'bg-gray-700/50' 
-                          : 'bg-white'
-                    }`}>
-                      <p className="text-sm">{message.content}</p>
-                      <p className={`text-xs mt-1 text-right ${
-                        message.isOwnMessage ? 'text-white/70' : (darkMode ? 'text-gray-400' : 'text-gray-500')
-                      }`}>
-                        {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+  <div key={index} className={`flex ${message.isOwnMessage ? 'justify-end' : 'justify-start'}`}>
+    <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md ${
+      message.isOwnMessage 
+        ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white' 
+        : darkMode 
+          ? 'bg-gray-700 text-white' 
+          : 'bg-white text-gray-900'
+    }`}>
+      {message.isFile ? (
+        <FileMessage message={message} />
+      ) : (
+        <p className="text-sm">{message.content}</p>
+      )}
+      <p className={`text-xs mt-1 ${
+        message.isOwnMessage 
+          ? 'text-white/70' 
+          : darkMode 
+            ? 'text-gray-400' 
+            : 'text-gray-500'
+      }`}>
+        {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </p>
+    </div>
+  </div>
+))}
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Message Input */}
-              <div className={`p-4 border-t transition-all duration-500 ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              {/* Chat Input */}
+              <div className={`p-4 border-t ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+                {/* File Preview */}
+                {selectedFile && (
+                  <div className="mb-3 p-3 bg-blue-50 rounded-lg flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <FileText className="w-5 h-5 text-blue-600" />
+                      <span className="text-sm font-medium">{selectedFile.name}</span>
+                      <span className="text-xs text-gray-500">
+                        ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedFile(null)}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+                
                 <div className="flex items-center space-x-3">
+                  {/* File Input */}
                   <input
-                    type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    placeholder="Type your message..."
-                    className={`flex-1 px-4 py-3 rounded-2xl transition-all duration-300 focus:scale-90 focus:shadow-lg border-2 focus:border-transparent focus:ring-4 focus:ring-violet-500/20 ${
-                      darkMode 
-                        ? 'bg-gray-700/50 border-gray-600 text-white placeholder-gray-400' 
-                        : 'bg-white/80 border-gray-200 text-gray-900 placeholder-gray-500'
-                    }`}
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    className="hidden"
+                    accept="*/*"
                   />
+                  
+                  {/* File Attach Button */}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`p-3 rounded-xl transition-all duration-300 hover:scale-110 ${
+                      darkMode 
+                        ? 'bg-gray-700/50 hover:bg-gray-600/50 text-gray-300' 
+                        : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                    }`}
+                    title="Attach file"
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </button>
+                  
+                  <div className="flex-1 relative">
+                    <textarea
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyPress={handleKeyPress}
+                      placeholder="Type your message..."
+                      className={`w-full px-4 py-3 rounded-2xl resize-none transition-all duration-300 focus:scale-105 focus:shadow-lg border-2 focus:border-transparent focus:ring-4 focus:ring-violet-500/20 ${
+                        darkMode 
+                          ? 'bg-gray-700/50 border-gray-600 text-white placeholder-gray-400' 
+                          : 'bg-white border-gray-200 text-gray-900 placeholder-gray-500'
+                      }`}
+                      rows={1}
+                    />
+                  </div>
+                  
+                  {/* Send File Button */}
+                  {selectedFile && (
+                    <button
+                      onClick={sendFile}
+                      disabled={isUploading}
+                      className="p-3 rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Send file"
+                    >
+                      {isUploading ? (
+                        <Upload className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Upload className="w-5 h-5" />
+                      )}
+                    </button>
+                  )}
+                  
+                  {/* Send Message Button */}
                   <button
                     onClick={sendMessage}
                     disabled={!input.trim() || sendingMessage}
-                    className="p-3 rounded-2xl transition-all duration-300 transform hover:scale-95 focus:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg hover:shadow-xl"
+                    className="p-3 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {sendingMessage ? (
-                      <RefreshCw className="w-5 h-5 animate-spin" />
-                    ) : (
-                      <Send className="w-5 h-5" />
-                    )}
+                    <Send className="w-5 h-5" />
                   </button>
                 </div>
               </div>
@@ -784,33 +998,34 @@ const initializeConnection = () => {
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center space-x-2">
-                    <button className={`p-2 rounded-xl transition-all duration-300 hover:scale-110 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100'}`}>
-                      <MoreHorizontal className="w-5 h-5 text-gray-500" />
-                    </button>
-                  </div>
                 </div>
               </div>
 
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {/* Group Messages */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {(groupMessages[activeGroup.id] || []).map((message, index) => (
                   <div key={index} className={`flex ${message.isOwnMessage ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md transition-all duration-300 transform hover:scale-105 ${
+                    <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md ${
                       message.isOwnMessage 
                         ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white' 
                         : darkMode 
-                          ? 'bg-gray-700/50' 
-                          : 'bg-white'
+                          ? 'bg-gray-700 text-white' 
+                          : 'bg-white text-gray-900'
                     }`}>
                       {!message.isOwnMessage && (
-                        <p className="text-xs font-semibold mb-1 text-violet-400">
+                        <p className={`text-xs font-semibold mb-1 ${
+                          darkMode ? 'text-gray-300' : 'text-gray-600'
+                        }`}>
                           {message.from}
                         </p>
                       )}
                       <p className="text-sm">{message.content}</p>
-                      <p className={`text-xs mt-1 text-right ${
-                        message.isOwnMessage ? 'text-white/70' : (darkMode ? 'text-gray-400' : 'text-gray-500')
+                      <p className={`text-xs mt-1 ${
+                        message.isOwnMessage 
+                          ? 'text-white/70' 
+                          : darkMode 
+                            ? 'text-gray-400' 
+                            : 'text-gray-500'
                       }`}>
                         {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
@@ -820,65 +1035,89 @@ const initializeConnection = () => {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Message Input */}
-              <div className={`p-4 border-t transition-all duration-500 ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              {/* Group Input */}
+              <div className={`p-4 border-t ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+                {/* File Preview */}
+                {selectedFile && (
+                  <div className="mb-3 p-3 bg-blue-50 rounded-lg flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <FileText className="w-5 h-5 text-blue-600" />
+                      <span className="text-sm font-medium">{selectedFile.name}</span>
+                      <span className="text-xs text-gray-500">
+                        ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedFile(null)}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+                
                 <div className="flex items-center space-x-3">
+                  {/* File Input */}
                   <input
-                    type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    placeholder="Type your message..."
-                    className={`flex-1 px-4 py-3 rounded-2xl transition-all duration-300 focus:scale-105 focus:shadow-lg border-2 focus:border-transparent focus:ring-4 focus:ring-violet-500/20 ${
-                      darkMode 
-                        ? 'bg-gray-700/50 border-gray-600 text-white placeholder-gray-400' 
-                        : 'bg-white/80 border-gray-200 text-gray-900 placeholder-gray-500'
-                    }`}
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    className="hidden"
+                    accept="*/*"
                   />
+                  
+                  {/* File Attach Button */}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`p-3 rounded-xl transition-all duration-300 hover:scale-110 ${
+                      darkMode 
+                        ? 'bg-gray-700/50 hover:bg-gray-600/50 text-gray-300' 
+                        : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                    }`}
+                    title="Attach file"
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </button>
+                  
+                  <div className="flex-1 relative">
+                    <textarea
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyPress={handleKeyPress}
+                      placeholder="Type your message..."
+                      className={`w-full px-4 py-3 rounded-2xl resize-none transition-all duration-300 focus:scale-105 focus:shadow-lg border-2 focus:border-transparent focus:ring-4 focus:ring-violet-500/20 ${
+                        darkMode 
+                          ? 'bg-gray-700/50 border-gray-600 text-white placeholder-gray-400' 
+                          : 'bg-white border-gray-200 text-gray-900 placeholder-gray-500'
+                      }`}
+                      rows={1}
+                    />
+                  </div>
+                  
+                  {/* Send File Button */}
+                  {selectedFile && (
+                    <button
+                      onClick={sendFile}
+                      disabled={isUploading}
+                      className="p-3 rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Send file"
+                    >
+                      {isUploading ? (
+                        <Upload className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Upload className="w-5 h-5" />
+                      )}
+                    </button>
+                  )}
+                  
+                  {/* Send Message Button */}
                   <button
                     onClick={sendMessage}
                     disabled={!input.trim() || sendingMessage}
-                    className="p-3 rounded-2xl transition-all duration-300 transform hover:scale-95 focus:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg hover:shadow-xl"
+                    className="p-3 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {sendingMessage ? (
-                      <RefreshCw className="w-5 h-5 animate-spin" />
-                    ) : (
-                      <Send className="w-5 h-5" />
-                    )}
+                    <Send className="w-5 h-5" />
                   </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Logs View */}
-          {showLogs && (
-            <div className="flex-1 flex flex-col">
-              <div className={`p-4 border-b transition-all duration-500 ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={goHome}
-                    className={`p-2 rounded-xl transition-all duration-300 hover:scale-110 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100'}`}
-                  >
-                    <ArrowLeft className="w-5 h-5 text-violet-600" />
-                  </button>
-                  <Settings className="w-6 h-6 text-violet-600" />
-                  <h2 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    System Logs
-                  </h2>
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-6">
-                <div className={`p-4 rounded-2xl font-mono text-sm overflow-y-auto ${darkMode ? 'bg-gray-900/50' : 'bg-gray-50/50'}`}>
-                  {logs.map((log, index) => (
-                    <div key={index} className={`mb-2 p-2 rounded-lg transition-all duration-200 hover:bg-violet-500/10 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      <span className={`${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                        [{new Date(log.timestamp).toLocaleTimeString()}]
-                      </span>
-                      <span className="ml-2">{log.message}</span>
-                    </div>
-                  ))}
                 </div>
               </div>
             </div>
@@ -887,90 +1126,110 @@ const initializeConnection = () => {
           {/* Create Group Modal */}
           {showCreateGroup && (
             <div className="flex-1 flex flex-col">
-              <div className={`p-4 border-b transition-all duration-500 ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              <div className={`p-4 border-b ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <button
-                      onClick={cancelCreateGroup}
-                      className={`p-2 rounded-xl transition-all duration-300 hover:scale-110 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100'}`}
-                    >
-                      <X className="w-5 h-5 text-red-500" />
-                    </button>
-                    <Users className="w-6 h-6 text-violet-600" />
-                    <h2 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      Create New Group
-                    </h2>
-                  </div>
+                  <h2 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    Create Group
+                  </h2>
                   <button
-                    onClick={createGroup}
-                    disabled={!groupName.trim() || selectedPeers.length === 0 || isCreatingGroup}
-                    className="px-4 py-2 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 focus:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg hover:shadow-xl"
+                    onClick={cancelCreateGroup}
+                    className={`p-2 rounded-xl transition-all duration-300 hover:scale-110 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100'}`}
                   >
-                    {isCreatingGroup ? 'Creating...' : 'Create Group'}
+                    <X className="w-5 h-5 text-gray-500" />
                   </button>
                 </div>
               </div>
-
-              <div className="flex-1 overflow-y-auto p-6">
-                <div className="space-y-6 max-w-lg mx-auto">
-                  <div>
-                    <label className={`block text-sm font-semibold mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      Group Name
-                    </label>
-                    <input
-                      type="text"
-                      value={groupName}
-                      onChange={(e) => setGroupName(e.target.value)}
-                      placeholder="Enter a name for your group"
-                      className={`w-full px-4 py-3 rounded-2xl transition-all duration-300 focus:scale-95 focus:shadow-lg border-2 focus:border-transparent focus:ring-4 focus:ring-violet-500/20 ${
-                        darkMode 
-                          ? 'bg-gray-700/50 border-gray-600 text-white placeholder-gray-400' 
-                          : 'bg-white/80 border-gray-200 text-gray-900 placeholder-gray-500'
-                      }`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className={`block text-sm font-semibold mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      Select Members ({selectedPeers.length} selected)
-                    </label>
-                    <div className="space-y-2 max-h-80 overflow-y-auto p-2 rounded-2xl">
-                      {connectedPeers.map((peer) => (
-                        <div
-                          key={peer.id}
-                          onClick={() => togglePeerSelection(peer)}
-                          className={`flex items-center space-x-3 p-3 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-105 hover:shadow-lg group ${
-                            selectedPeers.some(p => p.id === peer.id) 
-                              ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg' 
-                              : darkMode 
-                                ? 'hover:bg-gray-700/50' 
-                                : 'hover:bg-white/80'
-                          }`}
-                        >
-                          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${
-                            selectedPeers.some(p => p.id === peer.id)
-                              ? 'border-white bg-white'
-                              : (darkMode ? 'border-gray-500' : 'border-gray-300')
-                          }`}>
-                            {selectedPeers.some(p => p.id === peer.id) && (
-                              <Check className="w-4 h-4 text-violet-600" />
-                            )}
-                          </div>
-                          <div className="relative">
-                            <div className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300 ${
-                              selectedPeers.some(p => p.id === peer.id) 
-                                ? 'bg-white/20' 
-                                : 'bg-gradient-to-r from-violet-500 to-purple-500'
-                            }`}>
-                              <MessageCircle className="w-4 h-4 text-white" />
-                            </div>
+              
+              <div className="flex-1 p-4 space-y-6">
+                <div>
+                  <label className={`block text-sm font-semibold mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Group Name
+                  </label>
+                  <input
+                    type="text"
+                    value={groupName}
+                    onChange={(e) => setGroupName(e.target.value)}
+                    placeholder="Enter group name"
+                    className={`w-full px-4 py-3 rounded-2xl transition-all duration-300 focus:scale-105 focus:shadow-lg border-2 focus:border-transparent focus:ring-4 focus:ring-violet-500/20 ${
+                      darkMode 
+                        ? 'bg-gray-700/50 border-gray-600 text-white placeholder-gray-400' 
+                        : 'bg-white border-gray-200 text-gray-900 placeholder-gray-500'
+                    }`}
+                  />
+                </div>
+                
+                <div>
+                  <label className={`block text-sm font-semibold mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Select Members
+                  </label>
+                  <div className="space-y-2">
+                    {connectedPeers.map((peer) => (
+                      <button
+                        key={peer.id}
+                        onClick={() => togglePeerSelection(peer)}
+                        className={`w-full flex items-center justify-between p-3 rounded-2xl transition-all duration-300 hover:scale-105 ${
+                          selectedPeers.some(p => p.id === peer.id)
+                            ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg'
+                            : darkMode 
+                              ? 'bg-gray-700/50 hover:bg-gray-600/50' 
+                              : 'bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 bg-gradient-to-r from-violet-500 to-purple-500 rounded-xl flex items-center justify-center">
+                            <MessageCircle className="w-5 h-5 text-white" />
                           </div>
                           <span className="font-medium">{peer.name}</span>
                         </div>
-                      ))}
-                    </div>
+                        {selectedPeers.some(p => p.id === peer.id) && (
+                          <Check className="w-5 h-5" />
+                        )}
+                      </button>
+                    ))}
                   </div>
                 </div>
+                
+                <button
+                  onClick={createGroup}
+                  disabled={!groupName.trim() || selectedPeers.length === 0 || isCreatingGroup}
+                  className="w-full py-3 px-6 rounded-2xl font-semibold transition-all duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg hover:shadow-xl"
+                >
+                  {isCreatingGroup ? 'Creating...' : 'Create Group'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* System Logs */}
+          {showLogs && (
+            <div className="flex-1 flex flex-col">
+              <div className={`p-4 border-b ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-gradient-to-r from-violet-500 to-purple-500 rounded-xl flex items-center justify-center shadow-md">
+                    <Settings className="w-5 h-5 text-white" />
+                  </div>
+                  <h2 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    System Logs
+                  </h2>
+                </div>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="space-y-2">
+                  {logs.map((log, index) => (
+                    <div key={index} className={`p-3 rounded-xl ${darkMode ? 'bg-gray-700/50' : 'bg-white/80'}`}>
+                      <div className="flex items-center justify-between">
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          {log.message}
+                        </p>
+                        <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div ref={messagesEndRef} />
               </div>
             </div>
           )}
@@ -979,3 +1238,7 @@ const initializeConnection = () => {
     </div>
   );
 }
+
+
+
+
