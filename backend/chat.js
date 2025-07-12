@@ -6,6 +6,7 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { mdns } from '@libp2p/mdns';
 import { pipe } from 'it-pipe';
 import { fromString, toString } from 'uint8arrays';
+import { base64url } from 'multiformats/bases/base64';
 import { pushable } from 'it-pushable';
 import { WebSocketServer } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
@@ -112,6 +113,24 @@ async function createNode(name, wss) {
         const peer = connectedPeers.get(peerId);
         const senderName = peer ? peer.name : 'Unknown';
 
+        const group = groups.get(message.groupId);
+        if (group) {
+          const isMember = group.members.some(member => member.id === myPeerId);
+          if (isMember) {
+            wss.clients.forEach(client => {
+              if (client.readyState === 1) {
+                client.send(JSON.stringify({
+                  type: 'groupMessage',
+                  from: senderName,
+                  fromId: peerId,
+                  content: message.content,
+                  groupId: message.groupId,
+                  timestamp: new Date().toISOString()
+                }));
+              }
+            });
+          }
+        }
       } else if (message.type === 'fileShare') {
         const peer = connectedPeers.get(peerId);
         const senderName = peer ? peer.name : 'Unknown';
@@ -138,8 +157,7 @@ async function createNode(name, wss) {
         // Check if this peer is a member of the group
         const group = groups.get(message.groupId);
         if (group) {
-          const isMember = group.members.some(member => member.id === peerId) ||
-            group.createdBy === senderName;
+          const isMember = group.members.some(member => member.id === myPeerId);
 
           if (isMember) {
             wss.clients.forEach(client => {
@@ -151,7 +169,7 @@ async function createNode(name, wss) {
                   fileName: message.fileName,
                   fileSize: message.fileSize,
                   fileType: message.fileType,
-                  fileData: message.fileData,
+                  fileData: base64url.encode(message.fileData),
                   groupId: message.groupId,
                   timestamp: new Date().toISOString()
                 }));
@@ -180,6 +198,27 @@ async function createNode(name, wss) {
               type: 'groupInvite',
               group: message.group,
               invitedBy: message.invitedBy
+            }));
+          }
+        });
+      } else if (message.type === 'editMessage') {
+        wss.clients.forEach(client => {
+          if (client.readyState === 1) {
+            client.send(JSON.stringify({
+              type: 'editMessage',
+              messageId: message.messageId,
+              newContent: message.newContent,
+              fromId: peerId
+            }));
+          }
+        });
+      } else if (message.type === 'deleteMessage') {
+        wss.clients.forEach(client => {
+          if (client.readyState === 1) {
+            client.send(JSON.stringify({
+              type: 'deleteMessage',
+              messageId: message.messageId,
+              fromId: peerId
             }));
           }
         });
@@ -304,7 +343,7 @@ async function createNode(name, wss) {
     }
 
     try {
-      const chatMessage = JSON.stringify({ type: 'chat', content: message });
+      const chatMessage = JSON.stringify({ type: 'chat', content: message, id: uuidv4() });
       stream.push(fromString(chatMessage));
       addLog(`Message sent to ${connectedPeers.get(targetPeerId)?.name || 'Unknown'}`);
       return true;
@@ -325,7 +364,8 @@ async function createNode(name, wss) {
     const groupMessage = JSON.stringify({
       type: 'groupMessage',
       content: message,
-      groupId: groupId
+      groupId: groupId,
+      id: uuidv4()
     });
 
     let sentCount = 0;
@@ -413,6 +453,44 @@ async function createNode(name, wss) {
     return true;
   }
 
+  async function editMessage(messageId, newContent, targetPeerId) {
+    const stream = outgoingStreams.get(targetPeerId);
+    if (!stream) {
+      addLog(`No stream found for peer ${targetPeerId}`);
+      return false;
+    }
+
+    try {
+      const editMessage = JSON.stringify({ type: 'editMessage', messageId, newContent });
+      stream.push(fromString(editMessage));
+      addLog(`Edit message sent to ${connectedPeers.get(targetPeerId)?.name || 'Unknown'}`);
+      return true;
+    } catch (err) {
+      addLog(`Failed to send edit message to ${targetPeerId}: ${err.message}`);
+      cleanupPeer(targetPeerId);
+      return false;
+    }
+  }
+
+  async function deleteMessage(messageId, targetPeerId) {
+    const stream = outgoingStreams.get(targetPeerId);
+    if (!stream) {
+      addLog(`No stream found for peer ${targetPeerId}`);
+      return false;
+    }
+
+    try {
+      const deleteMessage = JSON.stringify({ type: 'deleteMessage', messageId });
+      stream.push(fromString(deleteMessage));
+      addLog(`Delete message sent to ${connectedPeers.get(targetPeerId)?.name || 'Unknown'}`);
+      return true;
+    } catch (err) {
+      addLog(`Failed to send delete message to ${targetPeerId}: ${err.message}`);
+      cleanupPeer(targetPeerId);
+      return false;
+    }
+  }
+
   async function createGroup(groupName, selectedMembers, creatorName) {
     const groupId = uuidv4();
 
@@ -475,6 +553,8 @@ async function createNode(name, wss) {
     sendGroupFile,
     createGroup,
     cleanupPeer,
+    editMessage,
+    deleteMessage,
     getLogs: () => logs
   };
 }
@@ -542,34 +622,36 @@ wss.on('connection', (ws) => {
         }
 
       } else if (data.type === 'sendFile' && node) {
-        const success = await node.sendFile(data.file, data.targetPeerId);
+        const file = { name: data.fileName, size: data.fileSize, type: data.fileType, data: data.fileData };
+        const success = await node.sendFile(file, data.targetPeerId);
 
         if (success) {
           ws.send(JSON.stringify({
             type: 'fileShare',
             from: data.senderName,
             fromId: 'self',
-            fileName: data.file.name,
-            fileSize: data.file.size,
-            fileType: data.file.type,
-            fileData: data.file.data,
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            fileType: data.fileType,
+            fileData: data.fileData,
             timestamp: new Date().toISOString(),
             toId: data.targetPeerId
           }));
         }
 
       } else if (data.type === 'sendGroupFile' && node) {
-        const success = await node.sendGroupFile(data.file, data.groupId);
+        const file = { name: data.fileName, size: data.fileSize, type: data.fileType, data: data.fileData };
+        const success = await node.sendGroupFile(file, data.groupId);
 
         if (success) {
           ws.send(JSON.stringify({
             type: 'groupFileShare',
             from: data.senderName,
             fromId: 'self',
-            fileName: data.file.name,
-            fileSize: data.file.size,
-            fileType: data.file.type,
-            fileData: data.file.data,
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            fileType: data.fileType,
+            fileData: data.fileData,
             groupId: data.groupId,
             timestamp: new Date().toISOString()
           }));
@@ -586,6 +668,27 @@ wss.on('connection', (ws) => {
             group: group
           }));
 
+        } else if (data.type === 'editMessage' && node) {
+          const success = await node.editMessage(data.messageId, data.newContent, data.targetPeerId);
+          if (success) {
+            ws.send(JSON.stringify({
+              type: 'editMessage',
+              messageId: data.messageId,
+              newContent: data.newContent,
+              fromId: 'self',
+              toId: data.targetPeerId
+            }));
+          }
+        } else if (data.type === 'deleteMessage' && node) {
+          const success = await node.deleteMessage(data.messageId, data.targetPeerId);
+          if (success) {
+            ws.send(JSON.stringify({
+              type: 'deleteMessage',
+              messageId: data.messageId,
+              fromId: 'self',
+              toId: data.targetPeerId
+            }));
+          }
         } else if (data.type === 'getLogs' && node) {
           ws.send(JSON.stringify({
             type: 'logs',
@@ -603,7 +706,7 @@ wss.on('connection', (ws) => {
 
           try {
             await node.libp2p.stop();
-          } catch (err) {
+          } catch (err) { 
             console.error('Error stopping libp2p:', err);
           }
 

@@ -28,14 +28,55 @@ export default function App() {
   const reconnectTimeoutRef = useRef(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
-
   const [selectedFile, setSelectedFile] = useState(null);
+
+  const [hoveredMessage, setHoveredMessage] = useState(null);
+  const [showMenuForMessageId, setShowMenuForMessageId] = useState(null);
+
+  const handleEditMessage = (message) => {
+    const newContent = prompt('Enter new message content', message.content);
+    if (newContent && newContent !== message.content) {
+      ws.send(JSON.stringify({
+        type: 'editMessage',
+        messageId: message.id,
+        newContent: newContent,
+        targetPeerId: activeChat.id
+      }));
+    }
+  };
+
+  const handleDeleteMessage = (message) => {
+    if (window.confirm('Are you sure you want to delete this message?')) {
+      ws.send(JSON.stringify({
+        type: 'deleteMessage',
+        messageId: message.id,
+        targetPeerId: activeChat.id
+      }));
+    }
+  };
+
+  const handleCopyMessage = (message) => {
+    navigator.clipboard.writeText(message.content);
+  };
 const [isUploading, setIsUploading] = useState(false);
 const fileInputRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, groupMessages, logs]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showMenuForMessageId && !event.target.closest('.message-options-menu')) {
+        setShowMenuForMessageId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showMenuForMessageId]);
 
   useEffect(() => {
     return () => {
@@ -162,45 +203,46 @@ const initializeConnection = () => {
             from: data.from,
             content: data.content,
             timestamp: data.timestamp,
-            isOwnMessage: data.fromId === 'self'
+            isOwnMessage: data.fromId === 'self',
+            id: data.id
           }]
         }));
         
       } 
 
-       else if (data.type === 'fileMessage') {
-      const chatKey = data.fromId === 'self' ? data.toId : data.fromId;
-      setChatMessages(prev => ({
-        ...prev,
-        [chatKey]: [...(prev[chatKey] || []), {
-          from: data.from,
-          content: data.content,
-          timestamp: data.timestamp,
-          isOwnMessage: data.fromId === 'self',
-          isFile: true,
-          fileName: data.fileName,
-          fileSize: data.fileSize,
-          fileType: data.fileType,
-          fileData: data.fileData
-        }]
-      }));
-    } else if (data.type === 'groupFileMessage') {
-      setGroupMessages(prev => ({
-        ...prev,
-        [data.groupId]: [...(prev[data.groupId] || []), {
-          from: data.from,
-          content: data.content,
-          timestamp: data.timestamp,
-          isOwnMessage: data.fromId === 'self',
-          groupId: data.groupId,
-          isFile: true,
-          fileName: data.fileName,
-          fileSize: data.fileSize,
-          fileType: data.fileType,
-          fileData: data.fileData
-        }]
-      }));
-    }
+       else if (data.type === 'fileShare') {
+        const chatKey = data.fromId === 'self' ? data.toId : data.fromId;
+        setChatMessages(prev => ({
+          ...prev,
+          [chatKey]: [...(prev[chatKey] || []), {
+            from: data.from,
+            content: data.content,
+            timestamp: data.timestamp,
+            isOwnMessage: data.fromId === 'self',
+            isFile: true,
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            fileType: data.fileType,
+            fileData: data.fileData
+          }]
+        }));
+      } else if (data.type === 'groupFileShare') {
+        setGroupMessages(prev => ({
+          ...prev,
+          [data.groupId]: [...(prev[data.groupId] || []), {
+            from: data.from,
+            content: data.content,
+            timestamp: data.timestamp,
+            isOwnMessage: data.fromId === 'self',
+            groupId: data.groupId,
+            isFile: true,
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            fileType: data.fileType,
+            fileData: data.fileData
+          }]
+        }));
+      }
       
       
       else if (data.type === 'groupMessage') {
@@ -241,10 +283,34 @@ const initializeConnection = () => {
       } else if (data.type === 'error') {
         console.error('Server error:', data.message);
         setConnectionError(data.message);
+      } else if (data.type === 'editMessage') {
+        const chatKey = data.fromId === 'self' ? data.toId : data.fromId;
+        setChatMessages(prev => ({
+          ...prev,
+          [chatKey]: prev[chatKey] ? prev[chatKey].map(msg => 
+            msg.id === data.messageId ? { ...msg, content: data.newContent } : msg
+          ) : []
+        }));
+      } else if (data.type === 'deleteMessage') {
+        const chatKey = data.fromId === 'self' ? data.toId : data.fromId;
+        setChatMessages(prev => ({
+          ...prev,
+          [chatKey]: prev[chatKey] ? prev[chatKey].filter(msg => msg.id !== data.messageId) : []
+        }));
       }
     } catch (err) {
       console.error('Error handling WebSocket message:', err);
     }
+  };
+
+  const MessageOptions = ({ message, onEdit, onDelete, onCopy }) => {
+    return (
+      <div className="message-options-menu absolute top-0 right-0 mt-2 mr-2 bg-white rounded-lg shadow-lg z-10">
+        <button onClick={onEdit} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Edit</button>
+        <button onClick={onDelete} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Delete</button>
+        <button onClick={onCopy} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Copy</button>
+      </div>
+    );
   };
 
   const FileMessage = ({ message }) => {
@@ -583,8 +649,8 @@ const initializeConnection = () => {
       <div className="absolute inset-0 bg-grid-pattern opacity-5"></div>
       <div className="relative flex h-screen">
         {/* Sidebar */}
-        <div className={`w-80 backdrop-blur-xl transition-all duration-500 flex flex-col border-r ${
-          darkMode ? 'bg-gray-800/90 border-gray-700/50' : 'bg-white/90 border-white/20'
+        <div className={`w-80 transition-all duration-500 flex flex-col border-r fixed left-0 top-0 h-screen z-10 ${
+          darkMode ? 'bg-gray-800 border-gray-700/50' : 'bg-white border-white/20'
         }`}>
           {/* Header */}
           <div className="p-6 border-b border-gray-200/20">
@@ -647,10 +713,6 @@ const initializeConnection = () => {
               />
             </div>
           </div>
-
-
-          
-
           {/* Navigation */}
           <div className="flex-1 overflow-y-auto">
             <div className="p-4 space-y-2">
@@ -760,18 +822,16 @@ const initializeConnection = () => {
               ))}
             </div>
           </div>
-
+          
           {/* Footer */}
-          <div className="p-4 border-t border-gray-200/20">
-            <div className="flex space-x-2">
+          <div className="p-4 border-t border-gray-200/20" >
+            <div className="flex space-x-2 h-16 items-center">
               <button
                 onClick={toggleLogs}
                 className={`flex-1 py-3 px-4 rounded-2xl font-semibold transition-all duration-300 hover:scale-105 ${
                   showLogs 
                     ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg' 
-                    : darkMode 
-                      ? 'bg-gray-700/50 hover:bg-gray-600/50 text-gray-300' 
-                      : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                    : 'bg-gradient-to-r from-violet-500 to-purple-500 text-white shadow-lg'
                 }`}
               >
                 <div className="flex items-center justify-center space-x-2">
@@ -794,7 +854,7 @@ const initializeConnection = () => {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col relative ml-80">
           {/* Welcome Screen */}
           {!activeChat && !activeGroup && !showLogs && !showCreateGroup && (
             <div className="flex-1 flex items-center justify-center">
@@ -820,7 +880,7 @@ const initializeConnection = () => {
           {activeChat && (
             <div className="flex-1 flex flex-col">
               {/* Chat Header */}
-              <div className={`p-4 border-b transition-all duration-500 ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              <div className={`p-4 border-b transition-all duration-500 sticky top-0 w-full z-30 ${darkMode ? 'border-gray-700/50 bg-gray-800' : 'border-gray-200/80 bg-white'}`}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-3">
                     <button
@@ -855,38 +915,83 @@ const initializeConnection = () => {
               
 
               {/* Chat Messages */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${darkMode ? 'bg-[#111827]' : ''}`} style={{ paddingTop: '80px', paddingBottom: '80px' }}>
                 {(chatMessages[activeChat.id] || []).map((message, index) => (
-  <div key={index} className={`flex ${message.isOwnMessage ? 'justify-end' : 'justify-start'}`}>
-    <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md ${
-      message.isOwnMessage 
-        ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white' 
-        : darkMode 
-          ? 'bg-gray-700 text-white' 
-          : 'bg-white text-gray-900'
-    }`}>
-      {message.isFile ? (
-        <FileMessage message={message} />
-      ) : (
-        <p className="text-sm">{message.content}</p>
-      )}
-      <p className={`text-xs mt-1 ${
-        message.isOwnMessage 
-          ? 'text-white/70' 
-          : darkMode 
-            ? 'text-gray-400' 
-            : 'text-gray-500'
-      }`}>
-        {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </p>
-    </div>
-  </div>
-))}
+                  <div
+                    key={index}
+                    className={`flex ${message.isOwnMessage ? 'justify-end' : 'justify-start'} items-start`}
+                    onMouseEnter={() => setHoveredMessage(message)}
+                    onMouseLeave={() => setHoveredMessage(null)}
+                  >
+                    {/* Menu for received messages (left side) */}
+                    {!message.isOwnMessage && hoveredMessage === message && (
+                      <div className="relative self-center mr-2">
+                        <button
+                          onClick={() => setShowMenuForMessageId(showMenuForMessageId === message.id ? null : message.id)}
+                          className="p-1 rounded-full hover:bg-gray-200/50"
+                        >
+                          <MoreHorizontal className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
+                        </button>
+                        {showMenuForMessageId === message.id && (
+                          <MessageOptions
+                            message={message}
+                            onEdit={() => { handleEditMessage(message); setShowMenuForMessageId(null); }}
+                            onDelete={() => { handleDeleteMessage(message); setShowMenuForMessageId(null); }}
+                            onCopy={() => { handleCopyMessage(message); setShowMenuForMessageId(null); }}
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    <div className={`relative max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md ${
+                      message.isOwnMessage
+                        ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white'
+                        : darkMode
+                          ? 'bg-gray-700 text-white'
+                          : 'bg-white text-gray-900'
+                    }`}>
+                      {message.isFile ? (
+                        <FileMessage message={message} />
+                      ) : (
+                        <p className="text-sm message-content">{message.content}</p>
+                      )}
+                      <p className={`text-xs mt-1 ${
+                        message.isOwnMessage
+                          ? 'text-white/70'
+                          : darkMode
+                            ? 'text-gray-400'
+                            : 'text-gray-500'
+                      }`}>
+                        {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+
+                    {/* Menu for own messages (right side) */}
+                    {message.isOwnMessage && hoveredMessage === message && (
+                      <div className="relative self-center ml-2">
+                        <button
+                          onClick={() => setShowMenuForMessageId(showMenuForMessageId === message.id ? null : message.id)}
+                          className="p-1 rounded-full hover:bg-gray-200/50"
+                        >
+                          <MoreHorizontal className="w-4 h-4 text-white" />
+                        </button>
+                        {showMenuForMessageId === message.id && (
+                          <MessageOptions
+                            message={message}
+                            onEdit={() => { handleEditMessage(message); setShowMenuForMessageId(null); }}
+                            onDelete={() => { handleDeleteMessage(message); setShowMenuForMessageId(null); }}
+                            onCopy={() => { handleCopyMessage(message); setShowMenuForMessageId(null); }}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
                 <div ref={messagesEndRef} />
               </div>
 
               {/* Chat Input */}
-              <div className={`p-4 border-t ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              <div className={`p-4 border-t sticky bottom-0 w-full z-20 ${darkMode ? 'border-gray-500/50 bg-gray-800' : 'border-gray-200/80 bg-white'}`}>
                 {/* File Preview */}
                 {selectedFile && (
                   <div className="mb-3 p-3 bg-blue-50 rounded-lg flex items-center justify-between">
@@ -906,7 +1011,7 @@ const initializeConnection = () => {
                   </div>
                 )}
                 
-                <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-3 h-16">
                   {/* File Input */}
                   <input
                     type="file"
@@ -977,7 +1082,7 @@ const initializeConnection = () => {
           {activeGroup && (
             <div className="flex-1 flex flex-col">
               {/* Group Header */}
-              <div className={`p-4 border-b transition-all duration-500 ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              <div className={`p-4 border-b transition-all duration-500 sticky top-0 w-full z-30 ${darkMode ? 'border-gray-700/50 bg-gray-800' : 'border-gray-200/80 bg-white'}`}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-3">
                     <button
@@ -1002,7 +1107,7 @@ const initializeConnection = () => {
               </div>
 
               {/* Group Messages */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${darkMode ? 'bg-[#111827]' : ''}`} style={{ paddingTop: '80px', paddingBottom: '80px' }}>
                 {(groupMessages[activeGroup.id] || []).map((message, index) => (
                   <div key={index} className={`flex ${message.isOwnMessage ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-md ${
@@ -1036,7 +1141,7 @@ const initializeConnection = () => {
               </div>
 
               {/* Group Input */}
-              <div className={`p-4 border-t ${darkMode ? 'border-gray-700/50' : 'border-gray-200/80'}`}>
+              <div className={`p-4 border-t sticky bottom-0 w-full z-20 ${darkMode ? 'border-gray-700/50 bg-gray-800' : 'border-gray-200/80 bg-white'}`}>
                 {/* File Preview */}
                 {selectedFile && (
                   <div className="mb-3 p-3 bg-blue-50 rounded-lg flex items-center justify-between">
@@ -1056,7 +1161,7 @@ const initializeConnection = () => {
                   </div>
                 )}
                 
-                <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-3 h-16">
                   {/* File Input */}
                   <input
                     type="file"
@@ -1235,10 +1340,7 @@ const initializeConnection = () => {
           )}
         </div>
       </div>
+      
     </div>
   );
 }
-
-
-
-
