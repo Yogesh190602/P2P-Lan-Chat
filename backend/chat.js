@@ -101,6 +101,7 @@ async function createNode(name, wss) {
               from: senderName,
               fromId: peerId,
               content: message.content,
+              id: message.id,
               timestamp: new Date().toISOString()
             }));
           }
@@ -124,6 +125,7 @@ async function createNode(name, wss) {
                   from: senderName,
                   fromId: peerId,
                   content: message.content,
+                  id: message.id,
                   groupId: message.groupId,
                   timestamp: new Date().toISOString()
                 }));
@@ -141,6 +143,7 @@ async function createNode(name, wss) {
               type: 'fileShare',
               from: senderName,
               fromId: peerId,
+
               fileName: message.fileName,
               fileSize: message.fileSize,
               fileType: message.fileType,
@@ -166,6 +169,7 @@ async function createNode(name, wss) {
                   type: 'groupFileShare',
                   from: senderName,
                   fromId: peerId,
+                  id: message.id,
                   fileName: message.fileName,
                   fileSize: message.fileSize,
                   fileType: message.fileType,
@@ -601,6 +605,7 @@ wss.on('connection', (ws) => {
             type: 'message',
             from: data.senderName,
             fromId: 'self',
+            id: uuidv4(),
             content: data.message,
             timestamp: new Date().toISOString(),
             toId: data.targetPeerId
