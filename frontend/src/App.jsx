@@ -179,10 +179,15 @@ export default function App() {
             fromId: data.fromId,
             toId: data.toId,
           };
-          setChatMessages((prev) => ({
-            ...prev,
-            [chatKey]: [...(prev[chatKey] || []), msgObj],
-          }))
+          setChatMessages((prev) => {
+            // Always sort messages by timestamp ascending (oldest at top, newest at bottom)
+            const updated = [...(prev[chatKey] || []), msgObj];
+            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            return {
+              ...prev,
+              [chatKey]: updated,
+            };
+          })
           // Save to IndexedDB: always use the deviceId of the peer you are chatting with
           // Only store if the peer is not myself (never store under my own deviceId)
           if (data.fromId === deviceId && data.toId && data.toId !== deviceId) {
@@ -208,10 +213,14 @@ export default function App() {
             fromId: data.fromId,
             toId: data.toId,
           };
-          setChatMessages((prev) => ({
-            ...prev,
-            [chatKey]: [...(prev[chatKey] || []), msgObj],
-          }))
+          setChatMessages((prev) => {
+            const updated = [...(prev[chatKey] || []), msgObj];
+            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            return {
+              ...prev,
+              [chatKey]: updated,
+            };
+          })
           // Save to IndexedDB: always use the deviceId of the peer you are chatting with
           if (data.fromId === deviceId || data.fromId === "self") {
             // Sent by me: store under toId (the peer's deviceId)
@@ -277,18 +286,26 @@ export default function App() {
           setConnectionError(data.message)
         } else if (data.type === "editMessage") {
           const chatKey = data.fromId === "self" ? data.toId : data.fromId
-          setChatMessages((prev) => ({
-            ...prev,
-            [chatKey]: prev[chatKey]
+          setChatMessages((prev) => {
+            let updated = prev[chatKey]
               ? prev[chatKey].map((msg) => (msg.id === data.messageId ? { ...msg, content: data.newContent } : msg))
-              : [],
-          }))
+              : [];
+            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            return {
+              ...prev,
+              [chatKey]: updated,
+            };
+          })
         } else if (data.type === "deleteMessage") {
           const chatKey = data.fromId === "self" ? data.toId : data.fromId
-          setChatMessages((prev) => ({
-            ...prev,
-            [chatKey]: prev[chatKey] ? prev[chatKey].filter((msg) => msg.id !== data.messageId) : [],
-          }))
+          setChatMessages((prev) => {
+            let updated = prev[chatKey] ? prev[chatKey].filter((msg) => msg.id !== data.messageId) : [];
+            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            return {
+              ...prev,
+              [chatKey]: updated,
+            };
+          })
         }
       } catch (err) {
         console.error("Error handling WebSocket message:", err)
@@ -476,9 +493,11 @@ export default function App() {
           // Update chatMessages state immediately
           setChatMessages((prev) => {
             const chatKey = localMsg.fromId === deviceId ? localMsg.toId : localMsg.fromId;
+            const updated = [...(prev[chatKey] || []), localMsg];
+            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
             return {
               ...prev,
-              [chatKey]: [...(prev[chatKey] || []), localMsg],
+              [chatKey]: updated,
             };
           });
           // console.log(`Sending message to ${activeChat.name}: ${input.trim()}`)

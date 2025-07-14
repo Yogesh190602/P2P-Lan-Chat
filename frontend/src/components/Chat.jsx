@@ -63,7 +63,10 @@ export function ChatWindow({
         className={`flex-1 overflow-y-auto p-4 space-y-4 ${darkMode ? "bg-[#111827]" : ""}`}
         style={{ paddingTop: "80px", paddingBottom: "80px" }}
       >
-        {(chatMessages[activeChat.id] || []).map((message, index) => (
+        {(chatMessages[activeChat.id] || [])
+          .slice() // copy to avoid mutating state
+          .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+          .map((message, index) => (
           <div
             key={index}
             className={`flex ${message.isOwnMessage ? "justify-end" : "justify-start"} items-start`}
