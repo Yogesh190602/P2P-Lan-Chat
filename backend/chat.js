@@ -1,4 +1,3 @@
-
 import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
@@ -566,6 +565,7 @@ async function createNode(name, wss) {
 const wss = new WebSocketServer({ port: 5000 });
 let node = null;
 
+// Only create the libp2p node if it doesn't exist (original behavior)
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
