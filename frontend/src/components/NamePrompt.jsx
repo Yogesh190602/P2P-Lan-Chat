@@ -1,7 +1,42 @@
 "use client"
 import { MessageCircle, Star, Zap, WifiOff } from "lucide-react"
+import { useEffect } from "react"
+
+// Function to generate a unique device ID
+const generateDeviceId = () => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
 
 export default function NamePrompt({ name, setName, handleNameSubmit, connectionError, darkMode }) {
+  useEffect(() => {
+    // Try to get existing name and device ID from local storage
+    const storedName = localStorage.getItem('userName');
+    let deviceId = localStorage.getItem('deviceId');
+    
+    // If no device ID exists, generate one and store it
+    if (!deviceId) {
+      deviceId = generateDeviceId();
+      localStorage.setItem('deviceId', deviceId);
+    }
+    
+    // If there's a stored name, set it
+    if (storedName) {
+      setName(storedName);
+    }
+  }, [setName]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    // Store the name in local storage
+    localStorage.setItem('userName', name);
+    // Call the original submit handler
+    handleNameSubmit(e);
+  };
+
   return (
     <div
       className={`min-h-screen flex items-center justify-center p-4 transition-all duration-700 ${darkMode ? "bg-gradient-to-br from-gray-900 via-purple-900 to-violet-900" : ""}`}
@@ -33,7 +68,7 @@ export default function NamePrompt({ name, setName, handleNameSubmit, connection
               <span className="text-red-700 text-sm">{connectionError}</span>
             </div>
           )}
-          <form onSubmit={handleNameSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label className={`block text-sm font-semibold mb-3 ${darkMode ? "text-gray-300" : ""}`}>
                 {"Enter your name"}

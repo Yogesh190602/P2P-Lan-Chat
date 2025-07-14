@@ -8,6 +8,8 @@ import Sidebar from "./components/Sidebar"
 import { ChatWindow } from "./components/Chat" // Consolidated import
 import { GroupChatWindow, CreateGroupModal } from "./components/Group"
 import SystemLogs from "./components/Logs"
+import { saveMessage, getAllMessages } from "./utils/db"
+import { savePeer, getPeerName, getAllPeers } from "./utils/peers"
 
 export default function App() {
   const [ws, setWs] = useState(null)
@@ -38,6 +40,7 @@ export default function App() {
   const [showMenuForMessageId, setShowMenuForMessageId] = useState(null)
   const [isUploading, setIsUploading] = useState(false)
   const fileInputRef = useRef(null)
+  const [deviceId, setDeviceId] = useState("")
 
   // Dark mode is default
   const darkMode = true
@@ -66,50 +69,89 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    // Get deviceId from localStorage
+    let storedDeviceId = localStorage.getItem("deviceId");
+    let storedName = localStorage.getItem("userName");
+    if (!storedDeviceId) {
+      storedDeviceId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+      localStorage.setItem("deviceId", storedDeviceId);
+    }
+    if (!storedName && name) {
+      localStorage.setItem("userName", name);
+    }
+    setDeviceId(storedDeviceId);
+    if (name) savePeer(storedDeviceId, name);
+    // Load messages from IndexedDB for this device
+    getAllMessages(storedDeviceId).then((msgs) => {
+      if (msgs && msgs.length > 0) {
+        // Group messages by chatKey (fromId/toId logic)
+        const grouped = {};
+        msgs.forEach((msg) => {
+          const chatKey = msg.fromId === storedDeviceId ? msg.toId : msg.fromId;
+          if (!grouped[chatKey]) grouped[chatKey] = [];
+          grouped[chatKey].push(msg);
+        });
+        setChatMessages(grouped);
+      }
+    });
+  }, [name]);
+
   const handleWebSocketMessage = useCallback(
     (data) => {
       try {
         if (data.type === "nodeStarted") {
           setConnectedPeers(data.peers || [])
           setGroups(data.groups || [])
+          // Save all peers' deviceId/name
+          (data.peers || []).forEach((peer) => {
+            if (peer.id && peer.name) savePeer(peer.id, peer.name);
+          });
         } else if (data.type === "connectedPeers") {
           setConnectedPeers(data.peers || [])
-        } else if (data.type === "groupList") {
-          setGroups(data.groups || [])
+          (data.peers || []).forEach((peer) => {
+            if (peer.id && peer.name) savePeer(peer.id, peer.name);
+          });
         } else if (data.type === "message") {
-          const chatKey = data.fromId === "self" ? data.toId : data.fromId
+          // Save sender info
+          if (data.fromId && data.from) savePeer(data.fromId, data.from);
+          const chatKey = data.fromId === deviceId ? data.toId : data.fromId;
+          const msgObj = {
+            from: data.from,
+            content: data.content,
+            timestamp: data.timestamp,
+            isOwnMessage: data.fromId === deviceId,
+            id: data.id,
+            fromId: data.fromId,
+            toId: data.toId,
+          };
           setChatMessages((prev) => ({
             ...prev,
-            [chatKey]: [
-              ...(prev[chatKey] || []),
-              {
-                from: data.from,
-                content: data.content,
-                timestamp: data.timestamp,
-                isOwnMessage: data.fromId === "self",
-                id: data.id,
-              },
-            ],
+            [chatKey]: [...(prev[chatKey] || []), msgObj],
           }))
+          // Save to IndexedDB
+          if (deviceId) saveMessage(deviceId, msgObj);
         } else if (data.type === "fileShare") {
           const chatKey = data.fromId === "self" ? data.toId : data.fromId
+          const msgObj = {
+            from: data.from,
+            content: data.content,
+            timestamp: data.timestamp,
+            isOwnMessage: data.fromId === "self",
+            isFile: true,
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            fileType: data.fileType,
+            fileData: data.fileData,
+            id: data.id,
+            fromId: data.fromId,
+            toId: data.toId,
+          };
           setChatMessages((prev) => ({
             ...prev,
-            [chatKey]: [
-              ...(prev[chatKey] || []),
-              {
-                from: data.from,
-                content: data.content,
-                timestamp: data.timestamp,
-                isOwnMessage: data.fromId === "self",
-                isFile: true,
-                fileName: data.fileName,
-                fileSize: data.fileSize,
-                fileType: data.fileType,
-                fileData: data.fileData,
-              },
-            ],
+            [chatKey]: [...(prev[chatKey] || []), msgObj],
           }))
+          if (deviceId) saveMessage(deviceId, msgObj);
         } else if (data.type === "groupFileShare") {
           setGroupMessages((prev) => ({
             ...prev,
@@ -184,7 +226,7 @@ export default function App() {
         console.error("Error handling WebSocket message:", err)
       }
     },
-    [showCreateGroup],
+    [showCreateGroup, deviceId],
   )
 
   const initializeConnection = useCallback(() => {
@@ -196,7 +238,7 @@ export default function App() {
       socket.onopen = () => {
         setConnected(true)
         setConnectionError("")
-        socket.send(JSON.stringify({ type: "start", name: name.trim() }))
+        socket.send(JSON.stringify({ type: "start", name: name.trim(), deviceId }))
       }
 
       socket.onmessage = (event) => {
@@ -229,7 +271,7 @@ export default function App() {
       console.error("Error initializing connection:", err)
       setConnectionError("Failed to initialize connection.")
     }
-  }, [name, isReconnecting, handleWebSocketMessage])
+  }, [name, isReconnecting, handleWebSocketMessage, deviceId])
 
   const handleNameSubmit = (e) => {
     e.preventDefault()
@@ -342,14 +384,24 @@ export default function App() {
       setSendingMessage(true)
       try {
         if (activeChat) {
-          ws.send(
-            JSON.stringify({
-              type: "sendMessage",
-              message: input.trim(),
-              targetPeerId: activeChat.id,
-              senderName: name,
-            }),
-          )
+          const msgObj = {
+            type: "sendMessage",
+            message: input.trim(),
+            targetPeerId: activeChat.id,
+            senderName: name,
+          };
+          ws.send(JSON.stringify(msgObj));
+          // Save sent message to IndexedDB as 'self'
+          if (deviceId) saveMessage(deviceId, {
+            from: name,
+            content: input.trim(),
+            timestamp: new Date().toISOString(),
+            isOwnMessage: true,
+            id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
+            fromId: deviceId,
+            toId: activeChat.id,
+          });
+          savePeer(deviceId, name);
           console.log(`Sending message to ${activeChat.name}: ${input.trim()}`)
         } else if (activeGroup) {
           ws.send(
