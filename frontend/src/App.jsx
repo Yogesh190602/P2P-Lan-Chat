@@ -41,6 +41,7 @@ export default function App() {
   const [isUploading, setIsUploading] = useState(false)
   const fileInputRef = useRef(null)
   const [deviceId, setDeviceId] = useState("")
+  const [peerIdToDeviceId, setPeerIdToDeviceId] = useState({});
 
   // Add a new state to track all known peers (from localStorage and from connectedPeers)
   const [allPeers, setAllPeers] = useState({});
@@ -154,6 +155,15 @@ export default function App() {
       try {
         if (data.type === "nodeStarted") {
           if (typeof setConnectedPeers === "function") setConnectedPeers(data.peers || []);
+          if (data.peers) {
+            const newPeerIdToDeviceId = {};
+            data.peers.forEach(peer => {
+              if (peer.id && peer.deviceId) {
+                newPeerIdToDeviceId[peer.deviceId] = peer.id;
+              }
+            });
+            setPeerIdToDeviceId(newPeerIdToDeviceId);
+          }
           if (typeof setGroups === "function") setGroups(data.groups || []);
           // Save all peers' deviceId/name
           (data.peers || []).forEach((peer) => {
@@ -161,6 +171,15 @@ export default function App() {
           });
         } else if (data.type === "connectedPeers") {
           if (typeof setConnectedPeers === "function") setConnectedPeers(data.peers || []);
+          if (data.peers) {
+            const newPeerIdToDeviceId = {};
+            data.peers.forEach(peer => {
+              if (peer.id && peer.deviceId) {
+                newPeerIdToDeviceId[peer.deviceId] = peer.id;
+              }
+            });
+            setPeerIdToDeviceId(newPeerIdToDeviceId);
+          }
           // Update peers' deviceId/name on reconnect
           (data.peers || []).forEach((peer) => {
             if (peer.id && peer.name) savePeer(peer.id, peer.name);
@@ -189,12 +208,11 @@ export default function App() {
             };
           })
           // Save to IndexedDB: always use the deviceId of the peer you are chatting with
-          // Only store if the peer is not myself (never store under my own deviceId)
-          if (data.fromId === deviceId && data.toId && data.toId !== deviceId) {
+          if (data.fromId === deviceId || data.fromId === "self") {
             // Sent by me: store under toId (the peer's deviceId)
             saveMessage(data.toId, msgObj);
-          } else if (data.toId === deviceId && data.fromId && data.fromId !== deviceId) {
-            // Received by me: store under fromId (the peer's deviceId)
+          } else {
+            // Received from peer: store under fromId (the peer's deviceId)
             saveMessage(data.fromId, msgObj);
           }
         } else if (data.type === "fileShare") {
@@ -390,7 +408,7 @@ export default function App() {
           fileSize: selectedFile.size,
           fileType: selectedFile.type,
           fileData: reader.result.split(",")[1],
-          targetPeerId: activeChat?.id,
+          targetPeerId: activeChat ? peerIdToDeviceId[activeChat.id] : undefined,
           groupId: activeGroup?.id,
           senderName: name,
         }
@@ -415,7 +433,7 @@ export default function App() {
           type: "editMessage",
           messageId: message.id,
           newContent: newContent,
-          targetPeerId: activeChat.id,
+          targetPeerId: peerIdToDeviceId[activeChat.id],
         }),
       )
     }
@@ -428,7 +446,7 @@ export default function App() {
         JSON.stringify({
           type: "deleteMessage",
           messageId: message.id,
-          targetPeerId: activeChat.id,
+          targetPeerId: peerIdToDeviceId[activeChat.id],
         }),
       )
     }
@@ -469,10 +487,11 @@ export default function App() {
       setSendingMessage(true)
       try {
         if (activeChat) {
+          const targetPeerId = peerIdToDeviceId[activeChat.id];
           const msgObj = {
             type: "sendMessage",
             message: input.trim(),
-            targetPeerId: activeChat.id,
+            targetPeerId: targetPeerId,
             senderName: name,
           };
           ws.send(JSON.stringify(msgObj));
@@ -533,7 +552,7 @@ export default function App() {
 
   const togglePeerSelection = (peer) => {
     setSelectedPeers((prev) =>
-      prev.some((p) => p.id === peer.id) ? prev.filter((p) => p.id !== peer.id) : [...prev, peer],
+      prev.some((p) => p.id === peer.id) ? prev.filter((p) => p.id !== peer.id) : [...prev, { ...peer, id: peerIdToDeviceId[peer.id] || peer.id }],
     )
   }
 
@@ -544,7 +563,7 @@ export default function App() {
         JSON.stringify({
           type: "createGroup",
           groupName: groupName.trim(),
-          selectedMembers: selectedPeers,
+          selectedMembers: selectedPeers.map(p => ({ id: peerIdToDeviceId[p.id] || p.id, name: p.name })),
           creatorName: name,
         }),
       )
