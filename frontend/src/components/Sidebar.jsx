@@ -74,10 +74,10 @@ export default function Sidebar({
           </div>
           {filteredPeers.map((peer) => (
             <button
-              key={peer.id}
+              key={peer.deviceId}
               onClick={() => openChat(peer)}
               className={`w-full flex items-center space-x-3 p-3 rounded-2xl transition-all duration-300 hover:scale-105 hover:shadow-lg group ${
-                activeChat?.id === peer.id
+                activeChat?.deviceId === peer.deviceId
                   ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg"
                   : darkMode
                     ? "hover:bg-gray-700/50"
@@ -87,23 +87,25 @@ export default function Sidebar({
               <div className="relative">
                 <div
                   className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 ${
-                    activeChat?.id === peer.id ? "bg-white/20" : "bg-gradient-to-r from-violet-500 to-purple-500"
+                    activeChat?.deviceId === peer.deviceId ? "bg-white/20" : "bg-gradient-to-r from-violet-500 to-purple-500"
                   }`}
                 >
                   <MessageCircle className="w-5 h-5 text-white" />
                 </div>
-                <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
+                <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-white ${
+                  peer.isOnline ? "bg-green-500 animate-pulse" : "bg-gray-400"
+                }`}></div>
               </div>
               <div className="flex-1 text-left">
-                <p className={`font-semibold text-sm ${darkMode && activeChat?.id !== peer.id ? "text-white" : ""}`}>
+                <p className={`font-semibold text-sm ${darkMode && activeChat?.deviceId !== peer.deviceId ? "text-white" : ""}`}>
                   {peer.name}
                 </p>
                 <p
                   className={`text-xs transition-all duration-300 ${
-                    activeChat?.id === peer.id ? "text-white/70" : darkMode ? "text-gray-400" : ""
+                    activeChat?.deviceId === peer.deviceId ? "text-white/70" : darkMode ? "text-gray-400" : ""
                   }`}
                 >
-                  {"Available"}
+                  {peer.isOnline ? "Online" : "Offline"}
                 </p>
               </div>
             </button>

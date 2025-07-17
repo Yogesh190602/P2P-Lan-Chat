@@ -63,7 +63,7 @@ export function ChatWindow({
         className={`flex-1 overflow-y-auto p-4 space-y-4 ${darkMode ? "bg-[#111827]" : ""}`}
         style={{ paddingTop: "80px", paddingBottom: "80px" }}
       >
-        {(chatMessages[activeChat.id] || [])
+        {(chatMessages || [])
           .slice() // copy to avoid mutating state
           .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
           .map((message, index) => (
@@ -83,7 +83,7 @@ export function ChatWindow({
                     : ""
               }`}
             >
-              {message.isFile ? (
+              {message.type === 'file' ? (
                 <FileMessage message={message} />
               ) : (
                 <p className="text-sm message-content">{message.content}</p>

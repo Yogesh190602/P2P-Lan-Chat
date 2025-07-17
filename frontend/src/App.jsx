@@ -5,23 +5,33 @@ import { MessageCircle } from "lucide-react"
 import NamePrompt from "./components/NamePrompt"
 import ConnectionStatus from "./components/Connection"
 import Sidebar from "./components/Sidebar"
-import { ChatWindow } from "./components/Chat" // Consolidated import
+import { ChatWindow } from "./components/Chat"
 import { GroupChatWindow, CreateGroupModal } from "./components/Group"
 import SystemLogs from "./components/Logs"
-import { saveMessage, getAllMessages } from "./utils/db"
-import { savePeer } from "./utils/peers"
+import StorageDebug from "./components/StorageDebug"
+import { saveMessage, getMessagesForPeer, saveGroupMessage, getAllGroupMessages, getMessageStats } from "./utils/db"
+import { savePeer, getAllPeers, updatePeerOnlineStatus } from "./utils/peers"
+import { initializeUser, saveUserName, getCurrentUser } from "./utils/user"
 
 export default function App() {
+  // Core state
   const [ws, setWs] = useState(null)
   const [connected, setConnected] = useState(false)
-  const [name, setName] = useState("")
+  const [user, setUser] = useState({ name: '', deviceId: '', isComplete: false })
   const [showNamePrompt, setShowNamePrompt] = useState(true)
-  const [connectedPeers, setConnectedPeers] = useState([])
+  
+  // Peer and group state
+  const [connectedPeers, setConnectedPeers] = useState([]) // Current online peers
+  const [allKnownPeers, setAllKnownPeers] = useState([]) // All known peers from DB
   const [groups, setGroups] = useState([])
+  
+  // Chat state
   const [activeChat, setActiveChat] = useState(null)
   const [activeGroup, setActiveGroup] = useState(null)
-  const [chatMessages, setChatMessages] = useState({})
+  const [chatMessages, setChatMessages] = useState([])
   const [groupMessages, setGroupMessages] = useState({})
+  
+  // UI state
   const [input, setInput] = useState("")
   const [logs, setLogs] = useState([])
   const [showLogs, setShowLogs] = useState(false)
@@ -31,28 +41,30 @@ export default function App() {
   const [isCreatingGroup, setIsCreatingGroup] = useState(false)
   const [connectionError, setConnectionError] = useState("")
   const [searchTerm, setSearchTerm] = useState("")
-  const messagesEndRef = useRef(null)
-  const reconnectTimeoutRef = useRef(null)
-  const [isReconnecting, setIsReconnecting] = useState(false)
   const [sendingMessage, setSendingMessage] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
   const [hoveredMessage, setHoveredMessage] = useState(null)
   const [showMenuForMessageId, setShowMenuForMessageId] = useState(null)
   const [isUploading, setIsUploading] = useState(false)
+  
+  // Refs
+  const messagesEndRef = useRef(null)
+  const reconnectTimeoutRef = useRef(null)
   const fileInputRef = useRef(null)
-  const [deviceId, setDeviceId] = useState("")
-  const [peerIdToDeviceId, setPeerIdToDeviceId] = useState({});
-
-  // Add a new state to track all known peers (from localStorage and from connectedPeers)
-  const [allPeers, setAllPeers] = useState({});
-
+  
+  // Other state
+  const [isReconnecting, setIsReconnecting] = useState(false)
+  const [peerIdToDeviceId, setPeerIdToDeviceId] = useState({})
+  
   // Dark mode is default
   const darkMode = true
 
+  // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [chatMessages, groupMessages, logs])
 
+  // Handle click outside for message options
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (showMenuForMessageId && !event.target.closest(".message-options-menu")) {
@@ -65,6 +77,7 @@ export default function App() {
     }
   }, [showMenuForMessageId])
 
+  // Cleanup reconnection timeout
   useEffect(() => {
     return () => {
       if (reconnectTimeoutRef.current) {
@@ -73,213 +86,273 @@ export default function App() {
     }
   }, [])
 
+  // Step 1: Initialize user on app start
   useEffect(() => {
-    // Get deviceId from localStorage
-    let storedDeviceId = localStorage.getItem("deviceId");
-    let storedName = localStorage.getItem("userName");
-    if (!storedDeviceId) {
-      storedDeviceId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
-      localStorage.setItem("deviceId", storedDeviceId);
-    }
-    if (!storedName && name) {
-      localStorage.setItem("userName", name);
-    }
-    setDeviceId(storedDeviceId);
-    if (name) savePeer(storedDeviceId, name);
-
-    // Load messages from IndexedDB for all known deviceIds (self + peers)
-    const peersMap = JSON.parse(localStorage.getItem('peersMap') || '{}');
-    const allIds = [storedDeviceId, ...Object.keys(peersMap).filter(id => id !== storedDeviceId)];
-    Promise.all(allIds.map(id => getAllMessages(id))).then((allMsgs) => {
-      // allMsgs is an array of arrays, flatten and group by chatKey (deviceId of the peer you are chatting with)
-      const grouped = {};
-      allMsgs.flat().forEach((msg) => {
-        // Always use the deviceId of the peer you are chatting with as the chatKey
-        // If I sent the message, chatKey is toId; if I received, chatKey is fromId
-        const chatKey = msg.fromId === storedDeviceId ? msg.toId : msg.fromId;
-        if (!grouped[chatKey]) grouped[chatKey] = [];
-        grouped[chatKey].push(msg);
-      });
-      setChatMessages(grouped);
-    });
-  }, [name]);
-
-  useEffect(() => {
-    // On mount or when name changes, load all known peers from localStorage, but filter out self
-    let peersMap = JSON.parse(localStorage.getItem('peersMap') || '{}');
-    // Remove any accidental self entries (by deviceId or by name)
-    if (deviceId) {
-      delete peersMap[deviceId];
-      // Remove any peer whose name matches my name (case-insensitive, trimmed)
-      Object.keys(peersMap).forEach((id) => {
-        if (
-          peersMap[id] &&
-          name &&
-          peersMap[id].trim().toLowerCase() === name.trim().toLowerCase()
-        ) {
-          delete peersMap[id];
+    const initializeApp = async () => {
+      try {
+        console.log('🚀 Initializing app...');
+        
+        // Initialize user identity
+        const userData = await initializeUser();
+        setUser(userData);
+        
+        if (userData.isComplete) {
+          console.log('✅ User setup complete, connecting...');
+          setShowNamePrompt(false);
+          await initializeConnection(userData.name, userData.deviceId);
+        } else {
+          console.log('❓ User setup incomplete, showing name prompt');
+          setShowNamePrompt(true);
         }
-      });
-    }
-    setAllPeers(peersMap);
-    localStorage.setItem('peersMap', JSON.stringify(peersMap));
-  }, [name, deviceId]);
-
-  useEffect(() => {
-    // Update allPeers when new peers are discovered (connectedPeers changes), but filter out self
-    let peersMap = JSON.parse(localStorage.getItem('peersMap') || '{}');
-    connectedPeers.forEach((peer) => {
-      if (peer.id && peer.name) {
-        peersMap[peer.id] = peer.name;
+        
+        // Load all known peers from database
+        await loadKnownPeers();
+        
+        // Log message statistics
+        const stats = await getMessageStats();
+        console.log('📊 Message Storage Statistics:', stats);
+      } catch (error) {
+        console.error('❌ Error initializing app:', error);
+        setConnectionError('Failed to initialize app. Please refresh.');
       }
-    });
-    // Remove any accidental self entries (by deviceId or by name)
-    if (deviceId) {
-      delete peersMap[deviceId];
-      Object.keys(peersMap).forEach((id) => {
-        if (
-          peersMap[id] &&
-          name &&
-          peersMap[id].trim().toLowerCase() === name.trim().toLowerCase()
-        ) {
-          delete peersMap[id];
-        }
-      });
-    }
-    setAllPeers(peersMap);
-    localStorage.setItem('peersMap', JSON.stringify(peersMap));
-  }, [connectedPeers, deviceId, name]);
+    };
 
+    initializeApp();
+  }, []);
+
+  // Load all known peers from database
+  const loadKnownPeers = async () => {
+    try {
+      const peers = await getAllPeers();
+      setAllKnownPeers(peers);
+      console.log('📖 Loaded known peers:', peers.length);
+    } catch (error) {
+      console.error('❌ Error loading known peers:', error);
+    }
+  };
+
+  // Update peer online status when connected peers change
+  useEffect(() => {
+    const updatePeerStatus = async () => {
+      if (!user.deviceId) return;
+      
+      try {
+        // Update all known peers to offline first
+        const allPeers = await getAllPeers();
+        await Promise.all(
+          allPeers.map(peer => updatePeerOnlineStatus(peer.deviceId, false))
+        );
+        
+        // Update connected peers to online and save their info
+        await Promise.all(
+          connectedPeers.map(async (peer) => {
+            if (peer.deviceId && peer.name && peer.deviceId !== user.deviceId) {
+              await savePeer(peer.deviceId, peer.name, true);
+              await updatePeerOnlineStatus(peer.deviceId, true);
+            }
+          })
+        );
+        
+        // Reload known peers to reflect changes
+        await loadKnownPeers();
+        
+        console.log('🔄 Updated peer status for', connectedPeers.length, 'connected peers');
+      } catch (error) {
+        console.error('❌ Error updating peer status:', error);
+      }
+    };
+    
+    updatePeerStatus();
+  }, [connectedPeers, user.deviceId]);
+
+  // Step 3: Handle WebSocket messages with new flow
   const handleWebSocketMessage = useCallback(
     (data) => {
       try {
         if (data.type === "nodeStarted") {
-          if (typeof setConnectedPeers === "function") setConnectedPeers(data.peers || []);
-          if (data.peers) {
-            const newPeerIdToDeviceId = {};
-            data.peers.forEach(peer => {
-              if (peer.id && peer.deviceId) {
-                newPeerIdToDeviceId[peer.deviceId] = peer.id;
-              }
-            });
-            setPeerIdToDeviceId(newPeerIdToDeviceId);
-          }
-          if (typeof setGroups === "function") setGroups(data.groups || []);
-          // Save all peers' deviceId/name
-          (data.peers || []).forEach((peer) => {
-            if (peer.id && peer.name) savePeer(peer.id, peer.name);
+          console.log('🚀 Node started, peers:', data.peers?.length || 0);
+          setConnectedPeers(data.peers || []);
+          
+          // Build peer ID mapping
+          const peerMapping = {};
+          (data.peers || []).forEach(peer => {
+            if (peer.id && peer.deviceId) {
+              peerMapping[peer.deviceId] = peer.id;
+            }
           });
+          setPeerIdToDeviceId(peerMapping);
+          
+          setGroups(data.groups || []);
+          
         } else if (data.type === "connectedPeers") {
-          if (typeof setConnectedPeers === "function") setConnectedPeers(data.peers || []);
-          if (data.peers) {
-            const newPeerIdToDeviceId = {};
-            data.peers.forEach(peer => {
-              if (peer.id && peer.deviceId) {
-                newPeerIdToDeviceId[peer.deviceId] = peer.id;
-              }
-            });
-            setPeerIdToDeviceId(newPeerIdToDeviceId);
-          }
-          // Update peers' deviceId/name on reconnect
-          (data.peers || []).forEach((peer) => {
-            if (peer.id && peer.name) savePeer(peer.id, peer.name);
+          console.log('👥 Connected peers updated:', data.peers?.length || 0);
+          setConnectedPeers(data.peers || []);
+          
+          // Build peer ID mapping
+          const peerMapping = {};
+          (data.peers || []).forEach(peer => {
+            if (peer.id && peer.deviceId) {
+              peerMapping[peer.deviceId] = peer.id;
+            }
           });
+          setPeerIdToDeviceId(peerMapping);
+          
         } else if (data.type === "message") {
-          // Save sender info
-          if (data.fromId && data.from) savePeer(data.fromId, data.from);
-          // Use deviceId for 'self', otherwise use fromId
-          const chatKey = data.fromId === deviceId ? data.toId : data.fromId;
-          const msgObj = {
-            from: data.from,
-            content: data.content,
-            timestamp: data.timestamp,
-            isOwnMessage: data.fromId === deviceId,
-            id: data.id,
-            fromId: data.fromId,
-            toId: data.toId,
-          };
-          setChatMessages((prev) => {
-            // Always sort messages by timestamp ascending (oldest at top, newest at bottom)
-            const updated = [...(prev[chatKey] || []), msgObj];
-            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            return {
-              ...prev,
-              [chatKey]: updated,
-            };
-          })
-          // Save to IndexedDB: always use the deviceId of the peer you are chatting with
-          if (data.fromId === deviceId || data.fromId === "self") {
-            // Sent by me: store under toId (the peer's deviceId)
-            saveMessage(data.toId, msgObj);
+          console.log('📨 Received message:', data);
+          
+          // Step 6: Handle message storage with new structure
+          const isOwnMessage = data.fromId === 'self';
+          let fromId, toId;
+          
+          if (isOwnMessage) {
+            // Message sent by me
+            fromId = user.deviceId;
+            const recipientPeer = connectedPeers.find(p => p.id === data.toId);
+            toId = recipientPeer ? recipientPeer.deviceId : data.toId;
           } else {
-            // Received from peer: store under fromId (the peer's deviceId)
-            saveMessage(data.fromId, msgObj);
+            // Message received from another peer
+            const senderPeer = connectedPeers.find(p => p.id === data.fromId);
+            fromId = senderPeer ? senderPeer.deviceId : data.fromId;
+            toId = user.deviceId; // Always use my device ID as toId for received messages
+            
+            // Save sender info if not already known
+            if (fromId && data.from) {
+              savePeer(fromId, data.from, true);
+              console.log('👤 Saved peer info:', fromId, data.from);
+            }
           }
+
+          const messageObj = {
+            id: data.id,
+            fromId: fromId,
+            toId: toId,
+            content: data.content,
+            type: 'text',
+            timestamp: data.timestamp,
+            isOwnMessage: isOwnMessage,
+            from: data.from
+          };
+          
+          // Save to IndexedDB immediately
+          saveMessage(messageObj);
+          
+          // Update UI if this is the active chat
+          if (activeChat && (activeChat.deviceId === fromId || activeChat.deviceId === toId)) {
+            setChatMessages(prev => {
+              const updated = [...prev, messageObj];
+              return updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            });
+          }
+          
+          console.log('💾 Message saved and UI updated');
+          
+          // Reload known peers to show this peer in sidebar
+          loadKnownPeers();
         } else if (data.type === "fileShare") {
-          const chatKey = data.fromId === "self" ? data.toId : data.fromId
-          const msgObj = {
+          console.log('📁 Received file share:', data);
+          
+          // Handle file sharing with new structure
+          const isOwnMessage = data.fromId === 'self';
+          let fromId, toId;
+          
+          if (isOwnMessage) {
+            // File sent by me
+            fromId = user.deviceId;
+            const recipientPeer = connectedPeers.find(p => p.id === data.toId);
+            toId = recipientPeer ? recipientPeer.deviceId : data.toId;
+          } else {
+            // File received from another peer
+            const senderPeer = connectedPeers.find(p => p.id === data.fromId);
+            fromId = senderPeer ? senderPeer.deviceId : data.fromId;
+            toId = user.deviceId; // Always use my device ID as toId for received files
+            
+            // Save sender info if not already known
+            if (fromId && data.from) {
+              savePeer(fromId, data.from, true);
+              console.log('👤 Saved peer info for file:', fromId, data.from);
+            }
+          }
+
+          const fileObj = {
+            id: data.id,
+            fromId: fromId,
+            toId: toId,
+            content: data.content,
+            type: 'file',
+            timestamp: data.timestamp,
+            isOwnMessage: isOwnMessage,
+            from: data.from,
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            fileType: data.fileType,
+            fileData: data.fileData
+          };
+          
+          // Save to IndexedDB immediately
+          saveMessage(fileObj);
+          
+          // Update UI if this is the active chat
+          if (activeChat && (activeChat.deviceId === fromId || activeChat.deviceId === toId)) {
+            setChatMessages(prev => {
+              const updated = [...prev, fileObj];
+              return updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            });
+          }
+          
+          console.log('💾 File message saved and UI updated');
+          
+          // Reload known peers to show this peer in sidebar
+          loadKnownPeers();
+        } else if (data.type === "groupFileShare") {
+          const groupMsgObj = {
             from: data.from,
             content: data.content,
             timestamp: data.timestamp,
             isOwnMessage: data.fromId === "self",
+            groupId: data.groupId,
             isFile: true,
             fileName: data.fileName,
             fileSize: data.fileSize,
             fileType: data.fileType,
             fileData: data.fileData,
-            id: data.id,
+            id: data.id || (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)),
             fromId: data.fromId,
-            toId: data.toId,
           };
-          setChatMessages((prev) => {
-            const updated = [...(prev[chatKey] || []), msgObj];
+          
+          setGroupMessages((prev) => {
+            const updated = [...(prev[data.groupId] || []), groupMsgObj];
             updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
             return {
               ...prev,
-              [chatKey]: updated,
+              [data.groupId]: updated,
             };
-          })
-          // Save to IndexedDB: always use the deviceId of the peer you are chatting with
-          if (data.fromId === deviceId || data.fromId === "self") {
-            // Sent by me: store under toId (the peer's deviceId)
-            saveMessage(data.toId, msgObj);
-          } else {
-            // Received from peer: store under fromId (the peer's deviceId)
-            saveMessage(data.fromId, msgObj);
-          }
-        } else if (data.type === "groupFileShare") {
-          setGroupMessages((prev) => ({
-            ...prev,
-            [data.groupId]: [
-              ...(prev[data.groupId] || []),
-              {
-                from: data.from,
-                content: data.content,
-                timestamp: data.timestamp,
-                isOwnMessage: data.fromId === "self",
-                groupId: data.groupId,
-                isFile: true,
-                fileName: data.fileName,
-                fileSize: data.fileSize,
-                fileType: data.fileType,
-                fileData: data.fileData,
-              },
-            ],
-          }))
+          });
+          
+          // Save group file message to IndexedDB
+          saveGroupMessage(data.groupId, groupMsgObj);
+          
         } else if (data.type === "groupMessage") {
-          setGroupMessages((prev) => ({
-            ...prev,
-            [data.groupId]: [
-              ...(prev[data.groupId] || []),
-              {
-                from: data.from,
-                content: data.content,
-                timestamp: data.timestamp,
-                isOwnMessage: data.fromId === "self",
-                groupId: data.groupId,
-              },
-            ],
-          }))
+          const groupMsgObj = {
+            from: data.from,
+            content: data.content,
+            timestamp: data.timestamp,
+            isOwnMessage: data.fromId === "self",
+            groupId: data.groupId,
+            id: data.id || (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)),
+            fromId: data.fromId,
+          };
+          
+          setGroupMessages((prev) => {
+            const updated = [...(prev[data.groupId] || []), groupMsgObj];
+            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            return {
+              ...prev,
+              [data.groupId]: updated,
+            };
+          });
+          
+          // Save group message to IndexedDB
+          saveGroupMessage(data.groupId, groupMsgObj);
         } else if (data.type === "groupCreated") {
           setGroups((prev) => {
             const exists = prev.some((g) => g.id === data.group.id)
@@ -303,45 +376,48 @@ export default function App() {
           console.error("Server error:", data.message)
           setConnectionError(data.message)
         } else if (data.type === "editMessage") {
-          const chatKey = data.fromId === "self" ? data.toId : data.fromId
-          setChatMessages((prev) => {
-            let updated = prev[chatKey]
-              ? prev[chatKey].map((msg) => (msg.id === data.messageId ? { ...msg, content: data.newContent } : msg))
-              : [];
-            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            return {
-              ...prev,
-              [chatKey]: updated,
-            };
-          })
+          // Handle message editing for active chat
+          if (activeChat) {
+            setChatMessages(prev => 
+              prev.map(msg => 
+                msg.id === data.messageId 
+                  ? { ...msg, content: data.newContent }
+                  : msg
+              )
+            );
+          }
         } else if (data.type === "deleteMessage") {
-          const chatKey = data.fromId === "self" ? data.toId : data.fromId
-          setChatMessages((prev) => {
-            let updated = prev[chatKey] ? prev[chatKey].filter((msg) => msg.id !== data.messageId) : [];
-            updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            return {
-              ...prev,
-              [chatKey]: updated,
-            };
-          })
+          // Handle message deletion for active chat
+          if (activeChat) {
+            setChatMessages(prev => 
+              prev.filter(msg => msg.id !== data.messageId)
+            );
+          }
         }
       } catch (err) {
         console.error("Error handling WebSocket message:", err)
       }
     },
-    [showCreateGroup, deviceId],
+    [showCreateGroup, user.deviceId, connectedPeers, activeChat, loadKnownPeers],
   )
 
-  const initializeConnection = useCallback(() => {
+  // Step 2: Initialize WebSocket connection
+  const initializeConnection = useCallback(async (userName, userDeviceId) => {
     try {
+      console.log('🔗 Initializing WebSocket connection...');
       const socket = new WebSocket("ws://localhost:5000")
       setWs(socket)
       setIsReconnecting(false)
 
       socket.onopen = () => {
+        console.log('✅ WebSocket connected');
         setConnected(true)
         setConnectionError("")
-        socket.send(JSON.stringify({ type: "start", name: name.trim(), deviceId }))
+        socket.send(JSON.stringify({ 
+          type: "start", 
+          name: userName.trim(), 
+          deviceId: userDeviceId 
+        }))
       }
 
       socket.onmessage = (event) => {
@@ -354,13 +430,14 @@ export default function App() {
       }
 
       socket.onclose = () => {
+        console.log('🔌 WebSocket disconnected');
         setConnected(false)
         setWs(null)
         if (!isReconnecting) {
           setIsReconnecting(true)
           reconnectTimeoutRef.current = setTimeout(() => {
-            if (name.trim()) {
-              initializeConnection()
+            if (userName.trim()) {
+              initializeConnection(userName, userDeviceId)
             }
           }, 3000)
         }
@@ -374,14 +451,33 @@ export default function App() {
       console.error("Error initializing connection:", err)
       setConnectionError("Failed to initialize connection.")
     }
-  }, [name, isReconnecting, handleWebSocketMessage, deviceId])
+  }, [isReconnecting, handleWebSocketMessage])
 
-  const handleNameSubmit = (e) => {
+  // Handle name submission from prompt
+  const handleNameSubmit = async (e) => {
     e.preventDefault()
-    if (name.trim()) {
-      setShowNamePrompt(false)
-      setConnectionError("")
-      initializeConnection()
+    const nameInput = e.target.elements.name?.value || user.name;
+    
+    if (nameInput?.trim()) {
+      try {
+        console.log('📝 Submitting name:', nameInput.trim());
+        
+        // Save user name
+        await saveUserName(nameInput.trim());
+        
+        // Update user state
+        const updatedUser = { ...user, name: nameInput.trim(), isComplete: true };
+        setUser(updatedUser);
+        
+        setShowNamePrompt(false);
+        setConnectionError("");
+        
+        // Initialize connection
+        await initializeConnection(nameInput.trim(), user.deviceId);
+      } catch (error) {
+        console.error('❌ Error submitting name:', error);
+        setConnectionError('Failed to save name. Please try again.');
+      }
     }
   }
 
@@ -408,9 +504,9 @@ export default function App() {
           fileSize: selectedFile.size,
           fileType: selectedFile.type,
           fileData: reader.result.split(",")[1],
-          targetPeerId: activeChat ? peerIdToDeviceId[activeChat.id] : undefined,
+          targetPeerId: activeChat ? peerIdToDeviceId[activeChat.deviceId] : undefined,
           groupId: activeGroup?.id,
-          senderName: name,
+          senderName: user.name,
         }
         ws.send(JSON.stringify(fileData))
         setSelectedFile(null)
@@ -433,7 +529,7 @@ export default function App() {
           type: "editMessage",
           messageId: message.id,
           newContent: newContent,
-          targetPeerId: peerIdToDeviceId[activeChat.id],
+          targetPeerId: peerIdToDeviceId[activeChat.deviceId],
         }),
       )
     }
@@ -446,7 +542,7 @@ export default function App() {
         JSON.stringify({
           type: "deleteMessage",
           messageId: message.id,
-          targetPeerId: peerIdToDeviceId[activeChat.id],
+          targetPeerId: peerIdToDeviceId[activeChat.deviceId],
         }),
       )
     }
@@ -456,80 +552,123 @@ export default function App() {
     navigator.clipboard.writeText(message.content)
   }
 
-  const openChat = (peer) => {
+  // Step 5: Open chat with a peer and load messages
+  const openChat = async (peer) => {
+    console.log('💬 Opening chat with:', peer.name, peer.deviceId);
+    
     setActiveChat(peer)
     setActiveGroup(null)
     setShowLogs(false)
     setShowCreateGroup(false)
-    if (!chatMessages[peer.id]) {
-      setChatMessages((prev) => ({
-        ...prev,
-        [peer.id]: [],
-      }))
+    
+    try {
+      // Load past messages from IndexedDB
+      const messages = await getMessagesForPeer(user.deviceId, peer.deviceId);
+      setChatMessages(messages);
+      
+      console.log('📜 Loaded', messages.length, 'messages for chat with', peer.name);
+    } catch (error) {
+      console.error('❌ Error loading messages for peer:', error);
+      setChatMessages([]);
     }
   }
 
-  const openGroup = (group) => {
+  const openGroup = async (group) => {
     setActiveGroup(group)
     setActiveChat(null)
     setShowLogs(false)
     setShowCreateGroup(false)
+    
+    // Load group messages from IndexedDB if not already loaded
     if (!groupMessages[group.id]) {
-      setGroupMessages((prev) => ({
-        ...prev,
-        [group.id]: [],
-      }))
+      try {
+        const storedGroupMessages = await getAllGroupMessages(group.id);
+        setGroupMessages((prev) => ({
+          ...prev,
+          [group.id]: storedGroupMessages,
+        }));
+      } catch (error) {
+        console.error('Error loading group messages:', error);
+        setGroupMessages((prev) => ({
+          ...prev,
+          [group.id]: [],
+        }));
+      }
     }
   }
 
+  // Step 6: Send message with new structure
   const sendMessage = () => {
     if (input.trim() && ws && connected && !sendingMessage) {
       setSendingMessage(true)
       try {
         if (activeChat) {
-          const targetPeerId = peerIdToDeviceId[activeChat.id];
-          const msgObj = {
+          const targetPeerId = peerIdToDeviceId[activeChat.deviceId];
+          const messageId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+          
+          // Send message via WebSocket
+          ws.send(JSON.stringify({
             type: "sendMessage",
             message: input.trim(),
             targetPeerId: targetPeerId,
-            senderName: name,
+            senderName: user.name,
+          }));
+          
+          // Create message object with new structure
+          const messageObj = {
+            id: messageId,
+            fromId: user.deviceId,
+            toId: activeChat.deviceId,
+            content: input.trim(),
+            type: 'text',
+            timestamp: new Date().toISOString(),
+            isOwnMessage: true,
+            from: user.name
           };
-          ws.send(JSON.stringify(msgObj));
-          // Save sent message to IndexedDB ONLY under the peer's deviceId (toId), not my own deviceId
-          const localMsg = {
-            from: name,
+          
+          // Save to IndexedDB immediately
+          saveMessage(messageObj);
+          
+          // Update UI immediately
+          setChatMessages(prev => {
+            const updated = [...prev, messageObj];
+            return updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+          });
+          
+          console.log('📤 Message sent and saved:', messageObj);
+          
+        } else if (activeGroup) {
+          const groupMsgObj = {
+            from: user.name,
             content: input.trim(),
             timestamp: new Date().toISOString(),
             isOwnMessage: true,
+            groupId: activeGroup.id,
             id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
-            fromId: deviceId,
-            toId: activeChat.id,
+            fromId: 'self',
           };
-          if (activeChat && activeChat.id && activeChat.id !== deviceId) {
-            saveMessage(activeChat.id, localMsg);
-          }
-          savePeer(deviceId, name);
-          // Update chatMessages state immediately
-          setChatMessages((prev) => {
-            const chatKey = localMsg.fromId === deviceId ? localMsg.toId : localMsg.fromId;
-            const updated = [...(prev[chatKey] || []), localMsg];
+          
+          // Save sent group message to IndexedDB immediately
+          saveGroupMessage(activeGroup.id, groupMsgObj);
+          
+          // Update group messages state immediately
+          setGroupMessages((prev) => {
+            const updated = [...(prev[activeGroup.id] || []), groupMsgObj];
             updated.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
             return {
               ...prev,
-              [chatKey]: updated,
+              [activeGroup.id]: updated,
             };
           });
-          // console.log(`Sending message to ${activeChat.name}: ${input.trim()}`)
-        } else if (activeGroup) {
+          
           ws.send(
             JSON.stringify({
               type: "sendGroupMessage",
               message: input.trim(),
               groupId: activeGroup.id,
-              senderName: name,
+              senderName: user.name,
             }),
           )
-          // console.log(`Sending group message to ${activeGroup.name}: ${input.trim()}`)
         }
         setInput("")
         setTimeout(() => setSendingMessage(false), 500)
@@ -552,7 +691,7 @@ export default function App() {
 
   const togglePeerSelection = (peer) => {
     setSelectedPeers((prev) =>
-      prev.some((p) => p.id === peer.id) ? prev.filter((p) => p.id !== peer.id) : [...prev, { ...peer, id: peerIdToDeviceId[peer.id] || peer.id }],
+      prev.some((p) => p.deviceId === peer.deviceId) ? prev.filter((p) => p.deviceId !== peer.deviceId) : [...prev, { ...peer, id: peerIdToDeviceId[peer.deviceId] || peer.id }],
     )
   }
 
@@ -563,8 +702,8 @@ export default function App() {
         JSON.stringify({
           type: "createGroup",
           groupName: groupName.trim(),
-          selectedMembers: selectedPeers.map(p => ({ id: peerIdToDeviceId[p.id] || p.id, name: p.name })),
-          creatorName: name,
+          selectedMembers: selectedPeers.map(p => ({ id: peerIdToDeviceId[p.deviceId] || p.id, name: p.name })),
+          creatorName: user.name,
         }),
       )
     }
@@ -614,31 +753,36 @@ export default function App() {
   }
 
 
-  // Group connectedPeers by deviceId, so that if multiple peers have the same deviceId, they are treated as one
-  // allPeers is a map of deviceId -> name
-  // connectedPeers is an array of { id: deviceId, name, peerId }
-  // We'll show each deviceId only once, and online if any peer with that deviceId is online
+  // Step 4: Show unique connected peers by device ID
   const onlineDeviceIds = new Set();
   connectedPeers.forEach((peer) => {
-    if (peer.id) onlineDeviceIds.add(peer.id);
+    if (peer.deviceId) onlineDeviceIds.add(peer.deviceId);
   });
 
-  // Build a unique list of peers by deviceId, and filter out self (my deviceId) so my name never appears in DMs
-  const peerListWithStatus = Object.entries(allPeers)
-    .filter(([id]) => id !== deviceId)
-    .map(([id, name]) => {
-      const online = onlineDeviceIds.has(id);
-      return { id, name, online };
-    });
+  // Build unique peer list from all known peers, excluding self
+  const peerListWithStatus = allKnownPeers
+    .filter(peer => peer.deviceId !== user.deviceId)
+    .map(peer => ({
+      deviceId: peer.deviceId,
+      name: peer.name,
+      isOnline: onlineDeviceIds.has(peer.deviceId),
+      lastSeen: peer.lastSeen
+    }));
 
-  const filteredPeers = peerListWithStatus.filter((peer) => peer.name.toLowerCase().includes(searchTerm.toLowerCase()))
-  const filteredGroups = groups.filter((group) => group.name.toLowerCase().includes(searchTerm.toLowerCase()))
+  console.log('📊 Peer list with status:', peerListWithStatus);
+
+  const filteredPeers = peerListWithStatus.filter((peer) => 
+    peer.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+  const filteredGroups = groups.filter((group) => 
+    group.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   if (showNamePrompt) {
     return (
       <NamePrompt
-        name={name}
-        setName={setName}
+        name={user.name}
+        setName={(newName) => setUser(prev => ({ ...prev, name: newName }))}
         handleNameSubmit={handleNameSubmit}
         connectionError={connectionError}
         darkMode={darkMode}
@@ -665,7 +809,7 @@ export default function App() {
       <div className="absolute inset-0 bg-grid-pattern opacity-5"></div>
       <div className="relative flex h-screen">
         <Sidebar
-          name={name}
+          name={user.name}
           connected={connected}
           darkMode={darkMode}
           searchTerm={searchTerm}
@@ -774,6 +918,9 @@ export default function App() {
           )}
         </div>
       </div>
+      
+      {/* Storage Debug Component */}
+      <StorageDebug darkMode={darkMode} />
     </div>
   )
 }
